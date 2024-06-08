@@ -1,0 +1,132 @@
+! pip install pyRofex
+import pyRofex
+from google.colab import auth
+auth.authenticate_user()
+import pandas as pd
+import time
+import gspread
+import datetime
+from google.auth import default
+creds, _ = default()
+
+#En este caso actualizo dos spreadsheets
+#spreadsheet auth and selection
+gc = gspread.authorize(creds)
+sg = gc.open("hoja1")
+sg2 = gc.open("hoja2")
+worksheet = sg.sheet1
+worksheet2 = sg2.sheet1
+
+
+
+# Endpoint selection (depends on your broker account)
+api_url = "https://api.eco.xoms.com.ar/"
+ws_url = "wss://api.eco.xoms.com.ar/"
+
+pyRofex._set_environment_parameter("url", api_url, pyRofex.Environment.LIVE)
+pyRofex._set_environment_parameter("ws", ws_url, pyRofex.Environment.LIVE)
+
+
+#Initialize the environment
+pyRofex.initialize(user="nombre de usuario",
+                   password="contraseña",
+                   account="numero de cuenta",
+                   environment=pyRofex.Environment.LIVE)
+
+
+
+# Lista para acumular los datos
+data_accumulated = []
+
+
+#Instrumentos
+instrumentos =['MERV - XMEV - GLOB - 24hs','MERV - XMEV - MELI - 24hs','MERV - XMEV - TGNO4 - 24hs','MERV - XMEV - VIST - 24hs','MERV - XMEV - PAMP - 24hs','MERV - XMEV - AL30 - CI','MERV - XMEV - AL30 - 24hs','MERV - XMEV - AL30C - CI',
+               'MERV - XMEV - AL30C - 24hs','MERV - XMEV - AL30D - CI','MERV - XMEV - AL30D - 24hs','MERV - XMEV - GD30 - 24hs','MERV - XMEV - GD30 - CI', 'MERV - XMEV - GD30C - 24hs', 'MERV - XMEV - GD30C - CI','MERV - XMEV - GD30D - 24hs',
+               'MERV - XMEV - GD30D - CI', 'MERV - XMEV - CEPU - 24hs', 'MERV - XMEV - BPOA7 - 24hs','MERV - XMEV - METR - 24hs','MERV - XMEV - TX25 - 24hs','MERV - XMEV - AE38 - CI','MERV - XMEV - AE38D - CI','MERV - XMEV - AE38C - CI'
+             ,'MERV - XMEV - TX25 - CI', 'MERV - XMEV - BPA7C - 24hs', 'MERV - XMEV - BPA7D - 24hs','MERV - XMEV - AL29 - 24hs','MERV - XMEV - AL29D - 24hs','MERV - XMEV - AL35 - 24hs','MERV - XMEV - AL35D - 24hs'
+             ,'MERV - XMEV - AL41 - 24hs','MERV - XMEV - AL41D - 24hs','MERV - XMEV - GD29 - 24hs','MERV - XMEV - GD29D - 24hs','MERV - XMEV - GD35 - 24hs','MERV - XMEV - GD35D - 24hs','MERV - XMEV - S14J4 - CI','MERV - XMEV - SJ4C - CI','MERV - XMEV - SJ4D - CI']
+
+# Lista para acumular los datos únicos
+unique_data_accumulated = set()
+
+# Definir los manejadores de eventos para el WebSocket
+def market_data_handler(message):
+    global unique_data_accumulated
+    print("Market Data Message Received: {0}".format(message))
+    # Convertir el mensaje en una lista de valores
+    timestamp = message['timestamp']
+    symbol = message['instrumentId']['symbol']
+
+    bid_price = message['marketData']['BI'][0]['price'] if message['marketData']['BI'] else 0
+
+    # Verificar si el precio de oferta es None y asignar 0 en su lugar
+    offer_price = message['marketData']['OF'][0]['price'] if message['marketData']['OF'] else 0
+
+     # Verificar si el símbolo ya existe en los datos acumulados
+    existing_symbols = set(item[0] for item in data_accumulated)
+    if symbol not in existing_symbols:
+        # Agregar los datos a la lista acumulada
+        data_accumulated.append([symbol, bid_price, offer_price])
+
+def error_handler(message):
+    """
+
+    Args:
+      message:
+    """
+    print("Error Message Received: {0}".format(message))
+
+def exception_handler(e):
+    print("Exception Occurred: {0}".format(e.msg))
+
+# Inicializar la conexión WebSocket con los manejadores de eventos
+pyRofex.init_websocket_connection(market_data_handler=market_data_handler,
+                                  error_handler=error_handler,
+                                  exception_handler=exception_handler)
+
+# Función para suscribirse a los datos de mercado y actualizar cada 1 segundos
+def subscribe_and_update(interval):
+    global data_accumulated, unique_data_accumulated
+    while True:
+        try:
+            # Obtener la hora actual en el horario de Argentina
+            hora_actual_argentina = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3)))
+            # Verificar si la hora actual es después de las 17:00:30
+            if hora_actual_argentina.hour >= 17 and hora_actual_argentina.minute >= 0 and hora_actual_argentina.second >= 30:
+                print("La ejecución se detiene a las 17:00:30 Horario de Argentina")
+                break
+            # Suscribirse para recibir mensajes de datos de mercado
+            instruments = instrumentos
+            entries = [pyRofex.MarketDataEntry.BIDS, pyRofex.MarketDataEntry.OFFERS, pyRofex.MarketDataEntry.LAST]
+            pyRofex.market_data_subscription(tickers=instruments, entries=entries)
+            # Esperar el intervalo especificado antes de volver a suscribirse
+            time.sleep(interval)
+
+            # Verificar si hay datos acumulados
+            if data_accumulated:
+                # Actualizar la hoja de cálculo con los datos acumulados
+                # Limpiar la hoja de cálculo antes de actualizarla
+                worksheet.clear()
+                worksheet2.clear()
+                # Convertir los datos acumulados en un DataFrame de pandas
+                df = pd.DataFrame(data_accumulated, columns=["Symbol", "Bid Price", "Offer Price"])
+                df_sorted = df.sort_values(by="Symbol")
+                # Actualizar la hoja de cálculo con el DataFrame
+                worksheet.update([df_sorted.columns.values.tolist()] + df_sorted.values.tolist())
+                worksheet2.update([df_sorted.columns.values.tolist()] + df_sorted.values.tolist())
+                # Limpiar la lista de datos acumulados
+                data_accumulated = []
+                # Limpiar el conjunto de datos únicos acumulados
+                unique_data_accumulated.clear()
+
+        except KeyboardInterrupt:
+            pyRofex.close_websocket_connection()
+            print("Conexion interrumpida")
+            break
+        except gspread.exceptions.APIError as e:
+            # Capturar y manejar el error de Google Sheets
+            error_message = f"Error al actualizar la hoja de cálculo: {e}"
+            print(error_message)
+
+#Actualizacion cada 25 segundos
+subscribe_and_update(interval=25)
